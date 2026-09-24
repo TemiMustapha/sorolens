@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
+	"regexp"
+	"strings"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/sorolens/sorolens/apps/api/internal/store"
-	"github.com/sorolens/sorolens/apps/api/internal/jsonutils"
-	"strings"
 )
 
 type GraphNode struct {
@@ -19,17 +21,28 @@ type GraphEdge struct {
 	Count  int    `json:"count"`
 }
 
+var contractIDRegex = regexp.MustCompile(`^C[A-Z2-7]{55}$`)
+
+func isValidContractID(id string) bool {
+	return contractIDRegex.MatchString(id)
+}
+
 func (h *Handler) ContractGraph(w http.ResponseWriter, r *http.Request) {
 	contractID := chi.URLParam(r, "id")
 	if contractID == "" {
-		jsonutils.WriteError(w, http.StatusBadRequest, "missing contract id")
+		writeError(w, r, http.StatusBadRequest, CodeInvalidInput, "missing contract id")
 		return
 	}
 
-	// Actually query invocation traces to extract cross-contract calls
-	invocations, _, err := h.Store.ListInvocations(r.Context(), contractID, "", 100, store.InvocationFilters{})
+	if !isValidContractID(contractID) {
+		writeError(w, r, http.StatusBadRequest, CodeInvalidInput, "invalid contract id")
+		return
+	}
+
+	// Ensure the contract exists
+	_, err := h.Store.GetContract(r.Context(), contractID)
 	if err != nil {
-		jsonutils.WriteError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, r, http.StatusNotFound, CodeNotFound, "contract not found")
 		return
 	}
 
@@ -37,16 +50,62 @@ func (h *Handler) ContractGraph(w http.ResponseWriter, r *http.Request) {
 	nodesMap := make(map[string]bool)
 	nodesMap[contractID] = true
 
-	// Analyze invocation traces by looking for contract IDs in arguments
-	for _, inv := range invocations {
-		for _, arg := range inv.ArgsDecoded {
-			if strArg, ok := arg.(string); ok {
-				if strings.HasPrefix(strArg, "C") && len(strArg) == 56 {
-					edgesMap[strArg]++
+	// Paginate through invocations up to a reasonable limit (e.g. 1000)
+	cursor := ""
+	fetched := 0
+	limit := 100
+	maxFetch := 1000
+
+	for {
+		if fetched >= maxFetch {
+			break
+		}
+
+		invocations, nextCursor, err := h.Store.ListInvocations(r.Context(), contractID, cursor, limit, store.InvocationFilters{})
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, CodeInternal, err.Error())
+			return
+		}
+
+		if len(invocations) == 0 {
+			break
+		}
+
+		for _, inv := range invocations {
+			// Add nil/type checks for ArgsDecoded
+			if inv.ArgsDecoded == nil {
+				continue
+			}
+
+			// In a real scenario, this involves analyzing the deep execution trace.
+			// Limitation: As we only have decoded arguments, we use a heuristic approach
+			// to detect cross-contract calls. This might miss dynamic invocations or
+			// misidentify IDs passed as data.
+			for _, arg := range inv.ArgsDecoded {
+				if strArg, ok := arg.(string); ok && isValidContractID(strArg) && strArg != contractID {
+					edgesMap[contractID+"|"+strArg]++
 					nodesMap[strArg] = true
 				}
 			}
+
+			// Limitation: Detecting inbound calls via callback/receive function names is a heuristic.
+			// A true inbound edge detection requires caller context from the invocation trace.
+			funcName := strings.ToLower(inv.FunctionName)
+			if strings.Contains(funcName, "callback") || strings.Contains(funcName, "receive") {
+				for _, arg := range inv.ArgsDecoded {
+					if strArg, ok := arg.(string); ok && isValidContractID(strArg) && strArg != contractID {
+						edgesMap[strArg+"|"+contractID]++
+						nodesMap[strArg] = true
+					}
+				}
+			}
 		}
+
+		fetched += len(invocations)
+		if nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
 	}
 
 	var nodes []GraphNode
@@ -55,12 +114,18 @@ func (h *Handler) ContractGraph(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var edges []GraphEdge
-	for target, count := range edgesMap {
-		edges = append(edges, GraphEdge{Source: contractID, Target: target, Count: count})
+	for k, count := range edgesMap {
+		parts := strings.Split(k, "|")
+		edges = append(edges, GraphEdge{Source: parts[0], Target: parts[1], Count: count})
 	}
 
-	jsonutils.WriteJSON(w, http.StatusOK, map[string]interface{}{
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"nodes": nodes,
 		"edges": edges,
+		"metadata": map[string]interface{}{
+			"heuristic_used": true,
+			"warning":        "Edges are inferred from argument inspection due to lack of deep trace context.",
+		},
 	})
 }

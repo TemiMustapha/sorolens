@@ -26,6 +26,7 @@ import { InvocationChart } from "@/components/InvocationChart";
 import { EventsTable } from "@/components/EventsTable";
 import { StoragePanel } from "@/components/StoragePanel";
 import { SnapshotPanel } from "@/components/SnapshotPanel";
+import { ContractGraph } from "@/components/ContractGraph";
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -356,6 +357,11 @@ function ContractDetailContent({ id }: { id: string }) {
       <section className="mb-8">
         <h2 className="mb-4 text-xl font-semibold">Snapshot / replay</h2>
         <SnapshotPanel contractId={id} currentLedger={currentLedger} />
+      </section>
+
+      <section className="mb-8">
+        <h2 className="mb-4 text-xl font-semibold">Dependency Graph</h2>
+        <ContractGraph contractId={id} />
       </section>
     </div>
   );
