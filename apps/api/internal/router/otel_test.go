@@ -4,6 +4,7 @@ import (
 	"testing"
 	"net/http"
 	"net/http/httptest"
+	"context"
 )
 
 func TestOTelMiddleware(t *testing.T) {
@@ -11,7 +12,9 @@ func TestOTelMiddleware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InitTracer failed: %v", err)
 	}
-	defer tp.Shutdown(nil)
+	if tp != nil {
+		defer tp.Shutdown(context.Background())
+	}
 
 	handler := OTelMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
