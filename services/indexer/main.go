@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -15,6 +16,11 @@ import (
 )
 
 func main() {
+	tp, _ := poller.InitTracer()
+	if tp != nil {
+		defer tp.Shutdown(context.Background())
+	}
+
 	mode := flag.String("mode", "once", "Run mode: once or continuous")
 	maxDuration := flag.Duration("max-duration", 270*time.Second, "Maximum duration for a single pass (once mode)")
 	pollInterval := flag.Duration("poll-interval", 5*time.Minute, "Sleep between passes (continuous mode)")
@@ -26,9 +32,13 @@ func main() {
 	}))
 
 	cfg := poller.Config{
-		LedgerWindow: uint32(*ledgerWindow),
-		PollInterval: *pollInterval,
-		MaxDuration:  *maxDuration,
+		LedgerWindow:         uint32(*ledgerWindow),
+		PollInterval:         *pollInterval,
+		MaxDuration:          *maxDuration,
+		AnomalyEnabled:       envBool("INDEXER_ANOMALY_ENABLED", false),
+		AnomalyLookbackHours: envInt("INDEXER_ANOMALY_LOOKBACK_HOURS", 168),
+		AnomalySigma:         envFloat("INDEXER_ANOMALY_SIGMA", 3),
+		AnomalyMinHistory:    envInt("INDEXER_ANOMALY_MIN_HISTORY", 12),
 	}
 
 	// Wire up real dependencies.
@@ -103,6 +113,14 @@ func (s *stubStore) GetSyncState(ctx context.Context, contractID string) (poller
 func (s *stubStore) UpsertSyncState(ctx context.Context, state poller.SyncState) error {
 	return nil
 }
+func (s *stubStore) CreateNextMonthPartition(_ context.Context) error { return nil }
+func (s *stubStore) CreateMonthlyPartitionIfNotExists(_ context.Context, _ int, _ int) error {
+	return nil
+}
+func (s *stubStore) RecentHourlyActivity(ctx context.Context, contractID string, hours int) ([]poller.HourlyActivity, error) {
+	return nil, nil
+}
+func (s *stubStore) InsertAlert(ctx context.Context, a poller.Alert) error { return nil }
 
 type stubRedis struct{}
 
@@ -110,3 +128,42 @@ func (r *stubRedis) SetNX(ctx context.Context, key, value string, ttl time.Durat
 	return true, nil
 }
 func (r *stubRedis) Del(ctx context.Context, key string) error { return nil }
+
+// envBool reads a boolean env var with a default.
+func envBool(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return def
+	}
+	return b
+}
+
+// envInt reads an integer env var with a default.
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+// envFloat reads a float env var with a default.
+func envFloat(key string, def float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def
+	}
+	return f
+}
