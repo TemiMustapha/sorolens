@@ -32,7 +32,8 @@ func main() {
 
 	config, err := pgxpool.ParseConfig(cfg.DatabaseURL)
 	if err != nil {
-		logger.Fatal(err)
+		logger.Error("parse config", "err", err)
+	os.Exit(1)
 	}
 	config.ConnConfig.Tracer = otelpgx.NewTracer()
 	pool, err := pgxpool.NewWithConfig(context.Background(), config)

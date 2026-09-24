@@ -30,10 +30,13 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 			Level: slog.LevelInfo,
 		}))
 
+		var pool *pgxpool.Pool
 		config, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
 		if err == nil {
 			config.ConnConfig.Tracer = otelpgx.NewTracer()
-			pool, err = pgxpool.NewWithConfig(context.Background(), config)
+			var p *pgxpool.Pool
+			p, err = pgxpool.NewWithConfig(context.Background(), config)
+			pool = p
 		}
 		if err != nil {
 			logger.Error("postgres connect", "err", err)
