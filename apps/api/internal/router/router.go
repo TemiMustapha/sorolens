@@ -53,6 +53,8 @@ func New(h *handler.Handler) http.Handler {
 		get("/contracts/{id}/stats", h.ContractStats)
 		get("/contracts/{id}/snapshot", h.ContractSnapshot)
 		get("/contracts/{id}/stream", h.StreamEvents)
+		get("/contracts/{id}/graph", h.ContractGraph)
+
 
 		// API keys (admin scope).
 		get("/api-keys", h.ListAPIKeys)
