@@ -326,21 +326,14 @@ impl WatchdogContract {
         if start < total {
             for i in start..core::cmp::min(start + limit, total) {
                 if let Some(id) = registry.get(i) {
-                    if let Some(config) = env.storage().instance().get::<_, ContractConfig>(&DataKey::Config(id.clone())) {
-                        page.push_back(ContractHealth {
-                            id: id,
-                            name: config.name,
-                            healthy: true,
-                            last_event_ledger: 0,
-                        });
+                    if let Some(record) = env.storage().persistent().get::<_, ContractHealth>(&DataKey::Health(id.clone())) {
+                        page.push_back(record);
                     }
                 }
             }
         }
         (page, total)
     }
-
-    /// (Legacy) use get_monitored_page for larger sets.
 
     pub fn get_all_monitored(env: Env) -> Vec<ContractHealth> {
         let registry: Vec<Address> = env
@@ -602,9 +595,20 @@ mod test {
             let name = symbol_short!("test");
             client.register_contract(&owner, &id, &name, &60u64);
         }
+        
+        // Test first page
         let (page, total) = client.get_monitored_page(&0, &2);
         assert_eq!(page.len(), 2);
         assert_eq!(total, 5);
 
+        // Test middle page
+        let (page, total) = client.get_monitored_page(&2, &2);
+        assert_eq!(page.len(), 2);
+        assert_eq!(total, 5);
+
+        // Test beyond end page
+        let (page, total) = client.get_monitored_page(&10, &5);
+        assert_eq!(page.len(), 0);
+        assert_eq!(total, 5);
     }
 }
