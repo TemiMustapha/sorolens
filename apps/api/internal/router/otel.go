@@ -22,18 +22,20 @@ func InitTracer(serviceName string) (*sdktrace.TracerProvider, error) {
 		if err != nil {
 			return nil, err
 		}
-	} else {
-		// Noop exporter
-		exp = sdktrace.NewNoopExporter() // Or just don't set Batcher if nil
 	}
 
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exp),
+	opts := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(resource.NewWithAttributes(
 			semconv.SchemaURL,
 			semconv.ServiceNameKey.String(serviceName),
 		)),
-	)
+	}
+
+	if exp != nil {
+		opts = append(opts, sdktrace.WithBatcher(exp))
+	}
+
+	tp := sdktrace.NewTracerProvider(opts...)
 	otel.SetTracerProvider(tp)
 	return tp, nil
 }
