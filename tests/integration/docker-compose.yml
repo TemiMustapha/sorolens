@@ -22,8 +22,7 @@ services:
       timeout: 5s
       retries: 5
   mock-rpc:
-    image: golang:1.21-alpine
-    command: ["sh", "-c", "echo 'starting mock rpc' && sleep 3600"]
+    build: ./mock_rpc
     ports:
       - "8000:8000"
   api:
