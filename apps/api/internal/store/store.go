@@ -58,6 +58,48 @@ type Store interface {
 	// GetGlobalStats returns aggregate counts across all tracked contracts.
 	// Computed with a single SQL query.
 	GetGlobalStats(ctx context.Context) (GlobalStats, error)
+
+	// CreateNextMonthPartition creates the partition for next month if it does not exist.
+	CreateNextMonthPartition(ctx context.Context) error
+
+	// CreateMonthlyPartitionIfNotExists creates a partition for the given year/month if it does not exist.
+	CreateMonthlyPartitionIfNotExists(ctx context.Context, year int, month int) error
+}
+
+// AlertSubscriptionStore is the read/write surface for alert webhook subscriptions.
+type AlertSubscriptionStore interface {
+	Create(ctx context.Context, s AlertSubscription) error
+	ListByContract(ctx context.Context, contractID string) ([]AlertSubscription, error)
+	Delete(ctx context.Context, id string) error
+	ListAll(ctx context.Context) ([]AlertSubscription, error)
+}
+
+// WatchlistStore is the interface for per-user watchlist (bookmark) operations.
+type WatchlistStore interface {
+	// AddToWatchlist adds a contract to a user's watchlist.
+	AddToWatchlist(ctx context.Context, userID, contractID string) error
+
+	// RemoveFromWatchlist removes a contract from a user's watchlist.
+	RemoveFromWatchlist(ctx context.Context, userID, contractID string) error
+
+	// ListWatchlist returns all contract IDs in a user's watchlist.
+	ListWatchlist(ctx context.Context, userID string) ([]string, error)
+
+	// IsInWatchlist checks if a contract is in a user's watchlist.
+	IsInWatchlist(ctx context.Context, userID, contractID string) (bool, error)
+}
+
+// UserStore is the data-access surface for role-based access control and
+// user lookups used by the RBAC middleware.
+type UserStore interface {
+	// UpsertUser inserts or updates a user, setting its role. Missing GitHub
+	// IDs and roles are left untouched on update.
+	UpsertUser(ctx context.Context, u User) error
+	// GetUserByID returns the user with the given ID, or ErrNotFound.
+	GetUserByID(ctx context.Context, id string) (User, error)
+	// GetUserByGitHubID returns the user whose GitHub ID matches, or
+	// ErrNotFound.
+	GetUserByGitHubID(ctx context.Context, githubID string) (User, error)
 }
 
 // ContractFilters holds optional query filters for listing contracts.

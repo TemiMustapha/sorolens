@@ -9,16 +9,19 @@ import (
 
 // MockStore is an in-memory Store + QueryStore implementation for unit tests.
 type MockStore struct {
-	contracts      map[string]Contract
-	events         []Event
-	invocations    []Invocation
-	storageEntries []StorageEntry
-	syncStates     map[string]SyncState
-	globalStats    GlobalStats
-	monitored      map[string]MonitoredContract
-	healthChecks   []HealthCheck
-	alerts         []ContractAlert
-	apiKeys        []APIKey
+	contracts          map[string]Contract
+	events             []Event
+	invocations        []Invocation
+	storageEntries     []StorageEntry
+	syncStates         map[string]SyncState
+	globalStats        GlobalStats
+	monitored          map[string]MonitoredContract
+	healthChecks       []HealthCheck
+	alerts             []ContractAlert
+	apiKeys            []APIKey
+	watchlist          map[string]map[string]bool
+	alertSubscriptions []AlertSubscription
+	users              map[string]User
 
 	// Error injection
 	UpsertContractErr   error
@@ -32,14 +35,20 @@ type MockStore struct {
 	RecentEventsErr     error
 	CreateAPIKeyErr     error
 	GetAPIKeyErr        error
+	UpsertUserErr       error
+	GetUserErr          error
 }
 
 // NewMockStore returns an initialized MockStore.
 func NewMockStore() *MockStore {
 	return &MockStore{
-		contracts:  make(map[string]Contract),
-		syncStates: make(map[string]SyncState),
-		monitored:  make(map[string]MonitoredContract),
+		contracts:          make(map[string]Contract),
+		syncStates:         make(map[string]SyncState),
+		monitored:          make(map[string]MonitoredContract),
+		watchlist:          make(map[string]map[string]bool),
+		alerts:             make([]ContractAlert, 0),
+		alertSubscriptions: make([]AlertSubscription, 0),
+		users:              make(map[string]User),
 	}
 }
 
@@ -134,6 +143,12 @@ func (m *MockStore) GetGlobalStats(_ context.Context) (GlobalStats, error) {
 // SetGlobalStats lets tests control what GetGlobalStats returns.
 func (m *MockStore) SetGlobalStats(gs GlobalStats) {
 	m.globalStats = gs
+}
+
+func (m *MockStore) CreateNextMonthPartition(_ context.Context) error { return nil }
+
+func (m *MockStore) CreateMonthlyPartitionIfNotExists(_ context.Context, _ int, _ int) error {
+	return nil
 }
 
 // ---- store.QueryStore -------------------------------------------------------
@@ -261,6 +276,99 @@ func (m *MockStore) GetContractStats(_ context.Context, contractID, window strin
 		}
 	}
 	return cs, nil
+}
+
+// DailyAggregates aggregates the in-memory events/invocations into per-day
+// buckets (midnight UTC). Mirrors the postgres generate_series behaviour:
+// every day in the window appears, empty days as zeroes.
+func (m *MockStore) DailyAggregates(_ context.Context, contractID string, days int) ([]DailyAggregate, error) {
+	if days <= 0 {
+		days = 90
+	}
+	now := time.Now().UTC()
+	start := now.AddDate(0, 0, -days)
+	dayOf := func(t time.Time) time.Time {
+		y, mo, d := t.UTC().Date()
+		return time.Date(y, mo, d, 0, 0, 0, 0, time.UTC)
+	}
+
+	feeByDay := map[time.Time]float64{}
+	invByDay := map[time.Time]float64{}
+	for _, inv := range m.invocations {
+		if inv.ContractID != contractID || inv.LedgerClosedAt.Before(start) {
+			continue
+		}
+		feeByDay[dayOf(inv.LedgerClosedAt)] += float64(inv.ResourceFeeCharged)
+		invByDay[dayOf(inv.LedgerClosedAt)]++
+	}
+
+	evByDay := map[time.Time]float64{}
+	for _, e := range m.events {
+		if e.ContractID != contractID || e.LedgerClosedAt.Before(start) {
+			continue
+		}
+		evByDay[dayOf(e.LedgerClosedAt)]++
+	}
+
+	var out []DailyAggregate
+	for i := days - 1; i >= 0; i-- {
+		d := dayOf(now.AddDate(0, 0, -i))
+		out = append(out, DailyAggregate{
+			Day:         d,
+			Fee:         feeByDay[d],
+			Invocations: invByDay[d],
+			Events:      evByDay[d],
+		})
+	}
+	return out, nil
+}
+
+// RecentHourlyActivity returns hourly buckets (oldest first) for the most
+// recent `hours` hours, mirroring the postgres query with zero-fill.
+func (m *MockStore) RecentHourlyActivity(_ context.Context, contractID string, hours int) ([]HourlyActivity, error) {
+	if hours <= 0 {
+		hours = 24
+	}
+	now := time.Now().UTC()
+	start := now.Add(-time.Duration(hours) * time.Hour)
+	hourOf := func(t time.Time) time.Time {
+		y, mo, d := t.UTC().Date()
+		return time.Date(y, mo, d, t.Hour(), 0, 0, 0, time.UTC)
+	}
+
+	evByHour := map[time.Time]int64{}
+	for _, e := range m.events {
+		if e.ContractID != contractID || e.LedgerClosedAt.Before(start) {
+			continue
+		}
+		evByHour[hourOf(e.LedgerClosedAt)]++
+	}
+
+	invByHour := map[time.Time]int64{}
+	cpuByHour := map[time.Time]int64{}
+	feeByHour := map[time.Time]int64{}
+	for _, inv := range m.invocations {
+		if inv.ContractID != contractID || inv.LedgerClosedAt.Before(start) {
+			continue
+		}
+		h := hourOf(inv.LedgerClosedAt)
+		invByHour[h]++
+		cpuByHour[h] += inv.CPUInsn
+		feeByHour[h] += inv.ResourceFeeCharged
+	}
+
+	var out []HourlyActivity
+	for i := hours - 1; i >= 0; i-- {
+		h := hourOf(now.Add(-time.Duration(i) * time.Hour))
+		out = append(out, HourlyActivity{
+			Hour:        h,
+			EventCount:  evByHour[h],
+			InvokeCount: invByHour[h],
+			CPU:         cpuByHour[h],
+			Fees:        feeByHour[h],
+		})
+	}
+	return out, nil
 }
 
 func (m *MockStore) RecentEvents(_ context.Context, contractID string, limit int) ([]Event, error) {
@@ -428,6 +536,133 @@ func (m *MockStore) TouchAPIKey(_ context.Context, id string) error {
 		}
 	}
 	return nil
+}
+
+// ---- store.AlertSubscriptionStore -------------------------------------------
+
+func (m *MockStore) Create(_ context.Context, s AlertSubscription) error {
+	m.alertSubscriptions = append(m.alertSubscriptions, s)
+	return nil
+}
+
+func (m *MockStore) ListByContract(_ context.Context, contractID string) ([]AlertSubscription, error) {
+	out := make([]AlertSubscription, 0)
+	for _, s := range m.alertSubscriptions {
+		if s.ContractID == contractID {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+func (m *MockStore) Delete(_ context.Context, id string) error {
+	filtered := make([]AlertSubscription, 0, len(m.alertSubscriptions))
+	for _, s := range m.alertSubscriptions {
+		if s.ID != id {
+			filtered = append(filtered, s)
+		}
+	}
+	m.alertSubscriptions = filtered
+	return nil
+}
+
+func (m *MockStore) ListAll(_ context.Context) ([]AlertSubscription, error) {
+	out := make([]AlertSubscription, len(m.alertSubscriptions))
+	copy(out, m.alertSubscriptions)
+	return out, nil
+}
+
+// ---- store.WatchlistStore ---------------------------------------------------
+
+func (m *MockStore) AddToWatchlist(_ context.Context, userID, contractID string) error {
+	if m.watchlist[userID] == nil {
+		m.watchlist[userID] = make(map[string]bool)
+	}
+	m.watchlist[userID][contractID] = true
+	return nil
+}
+
+func (m *MockStore) RemoveFromWatchlist(_ context.Context, userID, contractID string) error {
+	if m.watchlist[userID] != nil {
+		delete(m.watchlist[userID], contractID)
+	}
+	return nil
+}
+
+func (m *MockStore) ListWatchlist(_ context.Context, userID string) ([]string, error) {
+	items := m.watchlist[userID]
+	out := make([]string, 0, len(items))
+	for contractID := range items {
+		out = append(out, contractID)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func (m *MockStore) IsInWatchlist(_ context.Context, userID, contractID string) (bool, error) {
+	return m.watchlist[userID][contractID], nil
+}
+
+// ---- store.UserStore --------------------------------------------------------
+
+// AddUser is a test helper that seeds a user directly.
+func (m *MockStore) AddUser(u User) {
+	if u.CreatedAt.IsZero() {
+		u.CreatedAt = time.Now()
+	}
+	if u.Role == "" {
+		u.Role = RoleViewer
+	}
+	m.users[u.ID] = u
+}
+
+func (m *MockStore) UpsertUser(_ context.Context, u User) error {
+	if m.UpsertUserErr != nil {
+		return m.UpsertUserErr
+	}
+	existing, ok := m.users[u.ID]
+	if !ok {
+		if u.Role == "" {
+			u.Role = RoleViewer
+		}
+		if u.CreatedAt.IsZero() {
+			u.CreatedAt = time.Now()
+		}
+		m.users[u.ID] = u
+		return nil
+	}
+	// Preserve existing fields when the call does not supply a replacement.
+	if u.GitHubID != nil {
+		existing.GitHubID = u.GitHubID
+	}
+	if u.Role != "" {
+		existing.Role = u.Role
+	}
+	m.users[u.ID] = existing
+	return nil
+}
+
+func (m *MockStore) GetUserByID(_ context.Context, id string) (User, error) {
+	if m.GetUserErr != nil {
+		return User{}, m.GetUserErr
+	}
+	u, ok := m.users[id]
+	if !ok {
+		return User{}, ErrNotFound
+	}
+	return u, nil
+}
+
+func (m *MockStore) GetUserByGitHubID(_ context.Context, githubID string) (User, error) {
+	if m.GetUserErr != nil {
+		return User{}, m.GetUserErr
+	}
+	for _, u := range m.users {
+		if u.GitHubID != nil && *u.GitHubID == githubID {
+			return u, nil
+		}
+	}
+	return User{}, ErrNotFound
 }
 
 // ErrPing is returned by MockPinger when Healthy is false.
