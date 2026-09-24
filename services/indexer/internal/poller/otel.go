@@ -1,8 +1,7 @@
-package router
+package poller
 
 import (
 	"context"
-	"net/http"
 	"os"
 
 	"go.opentelemetry.io/otel"
@@ -12,7 +11,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
 )
 
-func InitTracer(serviceName string) (*sdktrace.TracerProvider, error) {
+func InitTracer() (*sdktrace.TracerProvider, error) {
 	ctx := context.Background()
 	var exp sdktrace.SpanExporter
 	var err error
@@ -27,7 +26,7 @@ func InitTracer(serviceName string) (*sdktrace.TracerProvider, error) {
 	opts := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(resource.NewWithAttributes(
 			semconv.SchemaURL,
-			semconv.ServiceNameKey.String(serviceName),
+			semconv.ServiceNameKey.String("indexer"),
 		)),
 	}
 
@@ -38,13 +37,4 @@ func InitTracer(serviceName string) (*sdktrace.TracerProvider, error) {
 	tp := sdktrace.NewTracerProvider(opts...)
 	otel.SetTracerProvider(tp)
 	return tp, nil
-}
-
-func OTelMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tracer := otel.Tracer("api")
-		ctx, span := tracer.Start(r.Context(), r.URL.Path)
-		defer span.End()
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
 }
